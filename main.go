@@ -1,0 +1,856 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"log"
+	"net/http"
+	"os"
+	"runtime"
+	"sync"
+	"time"
+)
+
+type HealthResponse struct {
+	Status       string    `json:"status"`
+	Timestamp    time.Time `json:"timestamp"`
+	Uptime       string    `json:"uptime"`
+	RequestCount int64     `json:"request_count"`
+	GoVersion    string    `json:"go_version"`
+}
+
+type Server struct {
+	startTime    time.Time
+	requestCount int64
+	mu           sync.RWMutex
+}
+
+func NewServer() *Server {
+	return &Server{
+		startTime: time.Now(),
+	}
+}
+
+func (s *Server) incrementRequestCount() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requestCount++
+}
+
+func (s *Server) getRequestCount() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.requestCount
+}
+
+func (s *Server) apiHealthHandler(w http.ResponseWriter, _ *http.Request) {
+	s.incrementRequestCount()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	response := HealthResponse{
+		Status:       "ok",
+		Timestamp:    time.Now(),
+		Uptime:       formatUptime(time.Since(s.startTime)),
+		RequestCount: s.getRequestCount(),
+		GoVersion:    runtime.Version(),
+	}
+
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func formatUptime(d time.Duration) string {
+	d = d.Round(time.Second)
+	return d.String()
+}
+
+func (s *Server) indexHandler(w http.ResponseWriter, _ *http.Request) {
+	s.incrementRequestCount()
+
+	html := `
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мониторинг соединения</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            transition: transform 0.3s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-card h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+        
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .stat-unit {
+            color: #666;
+            font-size: 0.6em;
+        }
+        
+        .status-online {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        
+        .status-offline {
+            color: #f44336;
+            font-weight: bold;
+        }
+        
+        .logs-container {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            max-height: 400px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+        
+        .log-entry {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+        
+        .log-entry.success {
+            border-left: 4px solid #4CAF50;
+        }
+        
+        .log-entry.error {
+            border-left: 4px solid #f44336;
+        }
+        
+        .log-time {
+            color: #666;
+            margin-right: 10px;
+        }
+        
+        .log-status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            color: white;
+            font-size: 0.8em;
+            margin-right: 10px;
+        }
+        
+        .log-status.success {
+            background: #4CAF50;
+        }
+        
+        .log-status.error {
+            background: #f44336;
+        }
+        
+        .controls {
+            margin-top: 20px;
+            text-align: center;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        button {
+            background: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background 0.3s;
+        }
+        
+        button:hover {
+            background: #f0f0f0;
+        }
+        
+        button.export {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        button.export:hover {
+            background: #45a049;
+        }
+        
+        button.clear {
+            background: #f44336;
+            color: white;
+        }
+        
+        button.clear:hover {
+            background: #da190b;
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .stats-summary {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+        
+        .stats-summary h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+        
+        .stats-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .stats-label {
+            color: #666;
+        }
+        
+        .stats-value {
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .warning {
+            background: #ff9800;
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Мониторинг соединения</h1>
+            <p>Проверка стабильности соединения с сервером</p>
+        </div>
+        
+        <div id="warning" class="warning">
+            ⚠️ Обнаружено множественных запросов! Проверка приостановлена.
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Статус соединения</h3>
+                <div id="connection-status" class="stat-value status-online">Проверка...</div>
+            </div>
+            
+            <div class="stat-card">
+                <h3>Время ответа</h3>
+                <div id="response-time" class="stat-value">0 <span class="stat-unit">ms</span></div>
+            </div>
+            
+            <div class="stat-card">
+                <h3>Успешных запросов</h3>
+                <div id="success-count" class="stat-value">0</div>
+            </div>
+            
+            <div class="stat-card">
+                <h3>Ошибок</h3>
+                <div id="error-count" class="stat-value">0</div>
+            </div>
+            
+            <div class="stat-card">
+                <h3>Uptime сервера</h3>
+                <div id="uptime" class="stat-value">0s</div>
+            </div>
+            
+            <div class="stat-card">
+                <h3>Последняя проверка</h3>
+                <div id="last-check" class="stat-value">--:--:--</div>
+            </div>
+        </div>
+
+        <div class="stats-summary">
+            <h3>📈 Статистика за все время</h3>
+            <div class="stats-row">
+                <span class="stats-label">Всего запросов:</span>
+                <span id="total-requests" class="stats-value">0</span>
+            </div>
+            <div class="stats-row">
+                <span class="stats-label">Процент успешных:</span>
+                <span id="success-rate" class="stats-value">0%</span>
+            </div>
+            <div class="stats-row">
+                <span class="stats-label">Среднее время ответа:</span>
+                <span id="avg-response-time" class="stats-value">0 ms</span>
+            </div>
+            <div class="stats-row">
+                <span class="stats-label">Максимальное время ответа:</span>
+                <span id="max-response-time" class="stats-value">0 ms</span>
+            </div>
+            <div class="stats-row">
+                <span class="stats-label">Минимальное время ответа:</span>
+                <span id="min-response-time" class="stats-value">0 ms</span>
+            </div>
+            <div class="stats-row">
+                <span class="stats-label">Время первого запроса:</span>
+                <span id="first-request" class="stats-value">--</span>
+            </div>
+            <div class="stats-row">
+                <span class="stats-label">Активных проверок:</span>
+                <span id="active-checks" class="stats-value">0</span>
+            </div>
+        </div>
+        
+        <div class="logs-container" id="logs">
+            <div class="log-entry">Ожидание первой проверки...</div>
+        </div>
+        
+        <div class="controls">
+            <button onclick="startMonitoring()" id="startBtn">▶ Запустить мониторинг</button>
+            <button onclick="stopMonitoring()" id="stopBtn" disabled>⏸ Остановить</button>
+            <button onclick="clearLogs()" class="clear">🗑 Очистить логи</button>
+            <button onclick="exportToCSV()" class="export">📥 Экспорт в CSV</button>
+            <button onclick="exportToJSON()" class="export">📥 Экспорт в JSON</button>
+            <button onclick="loadFromCookies()">🍪 Загрузить из cookies</button>
+            <button onclick="clearCookies()" class="clear">🍪 Очистить cookies</button>
+        </div>
+    </div>
+
+    <script>
+        // Конфигурация
+        const CHECK_INTERVAL = 5000; // 5 секунд
+        const API_URL = '/api/health';
+        const COOKIE_NAME = 'monitoring_data';
+        const MAX_LOG_ENTRIES = 1000;
+        const MAX_CONCURRENT_CHECKS = 1; // Максимальное количество одновременных проверок
+        
+        // Состояние
+        let monitoring = false;
+        let intervalId = null;
+        let logs = [];
+        let activeChecks = 0;
+        let isChecking = false; // Флаг для предотвращения множественных проверок
+        let checkQueue = []; // Очередь проверок
+        
+        // DOM элементы
+        const statusEl = document.getElementById('connection-status');
+        const responseTimeEl = document.getElementById('response-time');
+        const successCountEl = document.getElementById('success-count');
+        const errorCountEl = document.getElementById('error-count');
+        const uptimeEl = document.getElementById('uptime');
+        const lastCheckEl = document.getElementById('last-check');
+        const logsContainer = document.getElementById('logs');
+        const totalRequestsEl = document.getElementById('total-requests');
+        const successRateEl = document.getElementById('success-rate');
+        const avgResponseTimeEl = document.getElementById('avg-response-time');
+        const maxResponseTimeEl = document.getElementById('max-response-time');
+        const minResponseTimeEl = document.getElementById('min-response-time');
+        const firstRequestEl = document.getElementById('first-request');
+        const activeChecksEl = document.getElementById('active-checks');
+        const warningEl = document.getElementById('warning');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        
+        // Загрузка данных из cookies при старте
+        function loadFromCookies() {
+            try {
+                const cookies = document.cookie.split('; ');
+                for (let cookie of cookies) {
+                    const [name, value] = cookie.split('=');
+                    if (name === COOKIE_NAME) {
+                        const savedData = JSON.parse(decodeURIComponent(value));
+                        if (savedData.logs && Array.isArray(savedData.logs)) {
+                            logs = savedData.logs.map(log => ({
+                                ...log,
+                                time: new Date(log.time)
+                            }));
+                            updateLogs();
+                            updateStats();
+                            addLogEntry(true, 0, 'Данные загружены из cookies');
+                        }
+                        break;
+                    }
+                }
+            } catch (e) {
+                console.error('Ошибка загрузки из cookies:', e);
+            }
+        }
+        
+        // Сохранение данных в cookies
+        function saveToCookies() {
+            try {
+                const dataToSave = {
+                    logs: logs.slice(0, 100), // Сохраняем последние 100 записей
+                    timestamp: new Date().toISOString()
+                };
+                
+                const encoded = encodeURIComponent(JSON.stringify(dataToSave));
+                document.cookie = COOKIE_NAME + '=' + encoded + '; path=/; max-age=31536000';
+            } catch (e) {
+                console.error('Ошибка сохранения в cookies:', e);
+            }
+        }
+        
+        // Очистка cookies
+        function clearCookies() {
+            document.cookie = COOKIE_NAME + '=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+            addLogEntry(true, 0, 'Cookies очищены');
+        }
+        
+        // Форматирование времени
+        function formatTime(date) {
+            return date.toLocaleTimeString('ru-RU', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                fractionalSecondDigits: 3
+            });
+        }
+        
+        // Форматирование даты для CSV
+        function formatDateForCSV(date) {
+            return date.toISOString().replace('T', ' ').substring(0, 19);
+        }
+        
+        // Добавление записи в лог
+        function addLogEntry(success, responseTime, details) {
+            const now = new Date();
+            const logEntry = {
+                time: now,
+                success: success,
+                responseTime: responseTime,
+                details: details || ''
+            };
+            
+            logs.unshift(logEntry);
+            
+            // Ограничиваем количество логов
+            if (logs.length > MAX_LOG_ENTRIES) {
+                logs.pop();
+            }
+            
+            updateLogs();
+            updateStats();
+            saveToCookies();
+        }
+        
+        // Обновление отображения логов
+        function updateLogs() {
+            let html = '';
+            
+            for (let i = 0; i < Math.min(logs.length, 50); i++) {
+                const log = logs[i];
+                const statusClass = log.success ? 'success' : 'error';
+                const statusText = log.success ? '✓ УСПЕХ' : '✗ ОШИБКА';
+                const timeStr = formatTime(log.time);
+                
+                html += '<div class="log-entry ' + statusClass + '">' +
+                    '<span class="log-time">' + timeStr + '</span>' +
+                    '<span class="log-status ' + statusClass + '">' + statusText + '</span>' +
+                    '<span>' + log.responseTime + 'ms</span>' +
+                    (log.details ? '<span> - ' + log.details + '</span>' : '') +
+                '</div>';
+            }
+            
+            logsContainer.innerHTML = html || '<div class="log-entry">Нет записей</div>';
+        }
+        
+        // Обновление статистики
+        function updateStats() {
+            const total = logs.length;
+            const successCount = logs.filter(log => log.success).length;
+            const errorCount = total - successCount;
+            
+            successCountEl.textContent = successCount;
+            errorCountEl.textContent = errorCount;
+            totalRequestsEl.textContent = total;
+            activeChecksEl.textContent = activeChecks;
+            
+            const successRate = total > 0 ? ((successCount / total) * 100).toFixed(1) : 0;
+            successRateEl.textContent = successRate + '%';
+            
+            const responseTimes = logs
+                .filter(log => log.success && log.responseTime > 0)
+                .map(log => log.responseTime);
+            
+            if (responseTimes.length > 0) {
+                const avg = responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length;
+                const max = Math.max(...responseTimes);
+                const min = Math.min(...responseTimes);
+                
+                avgResponseTimeEl.textContent = avg.toFixed(1) + ' ms';
+                maxResponseTimeEl.textContent = max + ' ms';
+                minResponseTimeEl.textContent = min + ' ms';
+            }
+            
+            if (logs.length > 0) {
+                const lastLog = logs[logs.length - 1];
+                firstRequestEl.textContent = formatTime(lastLog.time);
+            }
+        }
+        
+        // Экспорт в CSV
+        function exportToCSV() {
+            if (logs.length === 0) {
+                alert('Нет данных для экспорта');
+                return;
+            }
+            
+            const headers = ['Timestamp', 'Status', 'Response Time (ms)', 'Details'];
+            const csvRows = [];
+            
+            csvRows.push(headers.join(','));
+            
+            for (let i = logs.length - 1; i >= 0; i--) {
+                const log = logs[i];
+                const row = [
+                    formatDateForCSV(log.time),
+                    log.success ? 'SUCCESS' : 'ERROR',
+                    log.responseTime,
+                    '"' + (log.details || '').replace(/"/g, '""') + '"'
+                ];
+                csvRows.push(row.join(','));
+            }
+            
+            csvRows.push('');
+            csvRows.push('STATISTICS');
+            csvRows.push('Total Requests,' + logs.length);
+            
+            const successCount = logs.filter(log => log.success).length;
+            csvRows.push('Successful,' + successCount);
+            csvRows.push('Failed,' + (logs.length - successCount));
+            
+            const successRate = logs.length > 0 ? ((successCount / logs.length) * 100).toFixed(1) : 0;
+            csvRows.push('Success Rate,' + successRate + '%');
+            
+            const csvContent = csvRows.join('\n');
+            const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            
+            const filename = 'monitoring_' + new Date().toISOString().slice(0, 19).replace(/:/g, '-') + '.csv';
+            
+            link.setAttribute('href', url);
+            link.setAttribute('download', filename);
+            link.style.visibility = 'hidden';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            
+            addLogEntry(true, 0, 'Экспорт в CSV: ' + filename);
+        }
+        
+        // Экспорт в JSON
+        function exportToJSON() {
+            if (logs.length === 0) {
+                alert('Нет данных для экспорта');
+                return;
+            }
+            
+            const exportData = {
+                exportDate: new Date().toISOString(),
+                totalLogs: logs.length,
+                statistics: {
+                    totalRequests: logs.length,
+                    successful: logs.filter(log => log.success).length,
+                    failed: logs.filter(log => !log.success).length
+                },
+                logs: logs.map(log => ({
+                    ...log,
+                    time: log.time.toISOString()
+                }))
+            };
+            
+            const jsonContent = JSON.stringify(exportData, null, 2);
+            const blob = new Blob([jsonContent], { type: 'application/json' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            
+            const filename = 'monitoring_' + new Date().toISOString().slice(0, 19).replace(/:/g, '-') + '.json';
+            
+            link.setAttribute('href', url);
+            link.setAttribute('download', filename);
+            link.style.visibility = 'hidden';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            
+            addLogEntry(true, 0, 'Экспорт в JSON: ' + filename);
+        }
+        
+        // Очистка логов
+        function clearLogs() {
+            if (confirm('Очистить все логи?')) {
+                logs = [];
+                updateStats();
+                updateLogs();
+                saveToCookies();
+                addLogEntry(true, 0, 'Логи очищены');
+            }
+        }
+        
+        // Проверка соединения с защитой от множественных вызовов
+        async function checkConnection() {
+            // Предотвращаем множественные проверки
+            if (isChecking) {
+                console.log('Проверка уже выполняется, пропускаем');
+                return;
+            }
+            
+            if (activeChecks >= MAX_CONCURRENT_CHECKS) {
+                warningEl.style.display = 'block';
+                addLogEntry(false, 0, 'Превышено количество одновременных проверок');
+                return;
+            }
+            
+            warningEl.style.display = 'none';
+            
+            activeChecks++;
+            isChecking = true;
+            updateStats();
+            
+            const startTime = performance.now();
+            
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // Таймаут 10 секунд
+                
+                const response = await fetch(API_URL, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json'
+                    },
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                const endTime = performance.now();
+                const responseTime = Math.round(endTime - startTime);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    statusEl.textContent = '🟢 ONLINE';
+                    statusEl.className = 'stat-value status-online';
+                    responseTimeEl.innerHTML = responseTime + ' <span class="stat-unit">ms</span>';
+
+                    uptimeEl.textContent = data.uptime;
+                    lastCheckEl.textContent = formatTime(new Date());
+                    
+                    addLogEntry(true, responseTime);
+                } else {
+                    throw new Error('HTTP ' + response.status);
+                }
+            } catch (error) {
+                const endTime = performance.now();
+                const responseTime = Math.round(endTime - startTime);
+                
+                statusEl.textContent = '🔴 OFFLINE';
+                statusEl.className = 'stat-value status-offline';
+                responseTimeEl.innerHTML = responseTime + ' <span class="stat-unit">ms</span>';
+                
+                let errorMsg = error.message;
+                if (error.name === 'AbortError') {
+                    errorMsg = 'Таймаут соединения';
+                }
+                
+                addLogEntry(false, responseTime, errorMsg);
+            } finally {
+                activeChecks--;
+                isChecking = false;
+                updateStats();
+                
+                // Проверяем очередь
+                if (checkQueue.length > 0) {
+                    const nextCheck = checkQueue.shift();
+                    setTimeout(nextCheck, 100);
+                }
+            }
+        }
+        
+        // Запуск мониторинга
+        function startMonitoring() {
+            if (!monitoring) {
+                monitoring = true;
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                
+                // Очищаем возможные старые интервалы
+                if (intervalId) {
+                    clearInterval(intervalId);
+                }
+                
+                intervalId = setInterval(() => {
+                    if (!isChecking && activeChecks < MAX_CONCURRENT_CHECKS) {
+                        checkConnection();
+                    } else {
+                        // Добавляем в очередь если нужно
+                        checkQueue.push(checkConnection);
+                    }
+                }, CHECK_INTERVAL);
+                
+                // Немедленная проверка
+                checkConnection();
+                addLogEntry(true, 0, 'Мониторинг запущен');
+            }
+        }
+        
+        // Остановка мониторинга
+        function stopMonitoring() {
+            if (monitoring) {
+                monitoring = false;
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                
+                if (intervalId) {
+                    clearInterval(intervalId);
+                    intervalId = null;
+                }
+                
+                // Очищаем очередь
+                checkQueue = [];
+                
+                addLogEntry(true, 0, 'Мониторинг остановлен');
+            }
+        }
+        
+        // Автоматический запуск при загрузке страницы с защитой
+        window.addEventListener('load', function() {
+            // Убеждаемся что нет активных интервалов
+            if (intervalId) {
+                clearInterval(intervalId);
+                intervalId = null;
+            }
+            
+            monitoring = false;
+            activeChecks = 0;
+            isChecking = false;
+            checkQueue = [];
+            
+            loadFromCookies();
+            startMonitoring();
+        });
+        
+        // Делаем функции глобальными для кнопок
+        window.startMonitoring = startMonitoring;
+        window.stopMonitoring = stopMonitoring;
+        window.clearLogs = clearLogs;
+        window.exportToCSV = exportToCSV;
+        window.exportToJSON = exportToJSON;
+        window.loadFromCookies = loadFromCookies;
+        window.clearCookies = clearCookies;
+    </script>
+</body>
+</html>
+    `
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(html))
+}
+
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		log.Printf("→ %s %s от %s", r.Method, r.URL.Path, r.RemoteAddr)
+		next.ServeHTTP(w, r)
+		log.Printf("← %s %s - %v", r.Method, r.URL.Path, time.Since(start))
+	})
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	server := NewServer()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", server.indexHandler)
+	mux.HandleFunc("/api/health", server.apiHealthHandler)
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		server.incrementRequestCount()
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("pong"))
+	})
+
+	handler := loggingMiddleware(mux)
+
+	httpServer := &http.Server{
+		Addr:         ":" + port,
+		Handler:      handler,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	log.Printf("🚀 Сервер запущен на http://localhost:%s", port)
+	log.Printf("📊 Главная страница: http://localhost:%s/", port)
+
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal("❌ Ошибка запуска сервера: ", err)
+	}
+}
