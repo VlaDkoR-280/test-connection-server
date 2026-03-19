@@ -8,10 +8,10 @@ COPY go.mod ./
 RUN go mod download
 
 # Копируем исходный код
-COPY main.go ./
+COPY . ./
 
 # Собираем бинарник
-RUN CGO_ENABLED=0 GOOS=linux go build -o health-monitor .
+RUN CGO_ENABLED=0 GOOS=linux go build -o health-monitor ./cmd/server
 
 # Финальный этап
 FROM alpine:latest
